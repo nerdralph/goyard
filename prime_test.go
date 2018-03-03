@@ -25,7 +25,14 @@ const num = 1 << 19 -1
 func TestPrime(t *testing.T){
 	prime := int32(num)
 	if !i32Prime(prime){
-		t.Error(prime, "is actually prime")
+		t.Error(prime, "failed prime test")
+	}
+}
+
+func TestPPrime(t *testing.T){
+	prime := big.NewInt(num)
+	if !prime.ProbablyPrime(0){
+		t.Error(prime, "failed prime test")
 	}
 }
 
