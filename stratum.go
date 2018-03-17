@@ -43,12 +43,11 @@ func cacheSize(epoch int) int {
     return sz
 }
 
-func makeCache(epoch int, seed []byte) []byte {
+func makeCacheFast(epoch int, seed []byte) []byte {
     sz := cacheSize(epoch)
     cache := make([]byte, sz)
 	digestStart := sha3.SumK512(seed)
     copy(cache, digestStart[:])
-
 	kf512 := sha3.ReHashK512()
 	digest := kf512.Data()
 	copy(digest, digestStart[:])
@@ -68,8 +67,40 @@ func makeCache(epoch int, seed []byte) []byte {
                 xorOff = (binary.LittleEndian.Uint32(cache[dstOff:]) % uint32(rows)) * hashBYTES
             )
             sha3.FastXORWords(digest, cache[srcOff:srcOff+hashBYTES], cache[xorOff:xorOff+hashBYTES])
+			//copy(digest, temp)
 			kf512.Hash()
             copy(cache[dstOff:], digest)
+        }
+    }
+
+    return cache
+}
+
+func makeCache(epoch int, seed []byte) []byte {
+    sz := cacheSize(epoch)
+    cache := make([]byte, sz)
+
+    digest := sha3.SumK512(seed)
+    copy(cache, digest[:])
+    for pos := hashBYTES; pos < sz; pos += hashBYTES {
+        digest = sha3.SumK512(cache[pos-hashBYTES:pos])
+        copy(cache[pos:], digest[:])
+    }
+    fmt.Println("Finished cache creation stage 1", time.Now())
+
+    // Use a low-round version of randmemohash
+    temp := make([]byte, hashBYTES)
+    rows := sz/hashBYTES
+    for i := 0; i < cacheROUNDS; i++ {
+        for j := 0; j < rows; j++ {
+            var (
+                srcOff = ((j - 1 + rows) % rows) * hashBYTES
+                dstOff = j * hashBYTES
+                xorOff = (binary.LittleEndian.Uint32(cache[dstOff:]) % uint32(rows)) * hashBYTES
+            )
+            sha3.FastXORWords(temp, cache[srcOff:srcOff+hashBYTES], cache[xorOff:xorOff+hashBYTES])
+            digest = sha3.SumK512(temp)
+            copy(cache[dstOff:], digest[:])
         }
     }
 
@@ -107,6 +138,8 @@ func main(){
     conn.Write(data)
     fmt.Printf("Sent: %s",data)
 
+    //const bufSize = 4096
+    //buf := make([]byte, bufSize)
     var buf []byte
     reader := bufio.NewReader(conn)
     // skip json result:true message
@@ -116,7 +149,12 @@ func main(){
         jerr = json.Unmarshal(buf, &response)
         if jerr != nil { fmt.Println(jerr) }
     }
-
+/*
+    resp := string(buf[:n])
+    if strings.Contains(resp, ":true}") {
+        fmt.Printf("Skip: %s",buf[:n])
+    }
+*/
     var rcvd struct{Result []string `json:"result"`}
     jerr = json.Unmarshal(buf, &rcvd)
     if jerr != nil { fmt.Println(jerr) }
@@ -136,6 +174,8 @@ func main(){
     fmt.Printf("Epoch %d seed: %x\n",epoch, digest)
     fmt.Println("Starting makeCache", time.Now())
     cache := makeCache(epoch, seed)
+    fmt.Println("Starting makeCacheFast", time.Now())
+    cache = makeCacheFast(epoch, seed)
     fmt.Println(time.Now(), "Cache size: ", len(cache)) 
     fmt.Printf("%x\n",cache[len(cache)-32:])
 }
