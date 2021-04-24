@@ -1,4 +1,9 @@
+// Ralph Doncaster
+// ethereum stratum mining connection test
+// go run ./stratum.go
+
 package main
+
 import(
     "fmt"
     "encoding/json"
@@ -7,15 +12,15 @@ import(
     "bufio"
 //    "os"
 //    "strconv"
-    "math"
+	"math/big"
     "time"
     "bytes"
 //    "strings"
     "encoding/hex"
-//    "hash"
+    "unsafe"
+//    "github.com/pkg/profile"
     "github.com/nerdralph/crypto/sha3"
 )
-//import "git.io/NR/crypto"
 
 const (
     cacheBYTESINIT = 16*1024*1024
@@ -24,25 +29,30 @@ const (
     hashBYTES = 64
 )
 
-func isPrime(n int32) bool {
-    if (n==2)||(n==3) {return true;}
-    if n%2 == 0 { return false }
-    if n%3 == 0 { return false }
-    sqrt := int32(math.Sqrt(float64(n)))
-    for i := int32(5); i <= sqrt; i+=6 {
-        if n%i == 0 { return false }
-        if n%(i+2) == 0 { return false; }
-    }
-    return true
+const wordSize = int(unsafe.Sizeof(int(0)))
+
+// XORs multiples of 4 or 8 bytes (depending on architecture.)
+// The arguments must be of equal length.
+func fastXORWords(dst, a, b []byte) {
+	dw := *(*[]uintptr)(unsafe.Pointer(&dst))
+	aw := *(*[]uintptr)(unsafe.Pointer(&a))
+	bw := *(*[]uintptr)(unsafe.Pointer(&b))
+	n := len(b) / wordSize
+	for i := 0; i < n; i++ {
+		dw[i] = aw[i] ^ bw[i]
+	}
 }
 
 func cacheSize(epoch int) int {
     sz := cacheBYTESINIT + cacheBYTESGROWTH * epoch
     sz -= hashBYTES
-    for ; !isPrime(int32(sz / hashBYTES)); sz -= 2 * hashBYTES {}
+    //for ; !isPrime(int32(sz / hashBYTES)); sz -= 2 * hashBYTES {}
+    for ; !big.NewInt(int64(sz / hashBYTES)).ProbablyPrime(0); sz -= 2*hashBYTES {}
     return sz
 }
 
+// create the ethereum light cache
+// todo: consider u32 or u64 instead of byte array to avoid pt conversions
 func makeCacheFast(epoch int, seed []byte) []byte {
     sz := cacheSize(epoch)
     cache := make([]byte, sz)
@@ -57,6 +67,8 @@ func makeCacheFast(epoch int, seed []byte) []byte {
         copy(cache[pos:], digest)
     }
 
+    fmt.Println("Finished fast cache creation stage 1", time.Now())
+
     // Use a low-round version of randmemohash
     rows := sz/hashBYTES
     for i := 0; i < cacheROUNDS; i++ {
@@ -65,42 +77,11 @@ func makeCacheFast(epoch int, seed []byte) []byte {
                 srcOff = ((j - 1 + rows) % rows) * hashBYTES
                 dstOff = j * hashBYTES
                 xorOff = (binary.LittleEndian.Uint32(cache[dstOff:]) % uint32(rows)) * hashBYTES
+                //xorOff = (int(cache[dstOff:]) % uint32(rows)) * hashBYTES
             )
-            sha3.FastXORWords(digest, cache[srcOff:srcOff+hashBYTES], cache[xorOff:xorOff+hashBYTES])
-			//copy(digest, temp)
+            fastXORWords(digest, cache[srcOff:srcOff+hashBYTES], cache[xorOff:xorOff+hashBYTES])
 			kf512.Hash()
             copy(cache[dstOff:], digest)
-        }
-    }
-
-    return cache
-}
-
-func makeCache(epoch int, seed []byte) []byte {
-    sz := cacheSize(epoch)
-    cache := make([]byte, sz)
-
-    digest := sha3.SumK512(seed)
-    copy(cache, digest[:])
-    for pos := hashBYTES; pos < sz; pos += hashBYTES {
-        digest = sha3.SumK512(cache[pos-hashBYTES:pos])
-        copy(cache[pos:], digest[:])
-    }
-    fmt.Println("Finished cache creation stage 1", time.Now())
-
-    // Use a low-round version of randmemohash
-    temp := make([]byte, hashBYTES)
-    rows := sz/hashBYTES
-    for i := 0; i < cacheROUNDS; i++ {
-        for j := 0; j < rows; j++ {
-            var (
-                srcOff = ((j - 1 + rows) % rows) * hashBYTES
-                dstOff = j * hashBYTES
-                xorOff = (binary.LittleEndian.Uint32(cache[dstOff:]) % uint32(rows)) * hashBYTES
-            )
-            sha3.FastXORWords(temp, cache[srcOff:srcOff+hashBYTES], cache[xorOff:xorOff+hashBYTES])
-            digest = sha3.SumK512(temp)
-            copy(cache[dstOff:], digest[:])
         }
     }
 
@@ -121,6 +102,8 @@ type jmsg struct{
 }
 
 func main(){
+    //defer profile.Start().Stop()
+
 	// pool := "us-east1.ethereum.miningpoolhub.com:20536"
 	pool := "eth-us-east1.nanopool.org:9999"
     //pool := "us1.ethermine.org:4444"
@@ -172,10 +155,10 @@ func main(){
         epoch++
     }
     fmt.Printf("Epoch %d seed: %x\n",epoch, digest)
-    fmt.Println("Starting makeCache", time.Now())
-    cache := makeCache(epoch, seed)
+    //fmt.Println("Starting makeCache", time.Now())
+    //cache := makeCache(epoch, seed)
     fmt.Println("Starting makeCacheFast", time.Now())
-    cache = makeCacheFast(epoch, seed)
+    cache := makeCacheFast(epoch, seed)
     fmt.Println(time.Now(), "Cache size: ", len(cache)) 
     fmt.Printf("%x\n",cache[len(cache)-32:])
 }
